@@ -1,0 +1,175 @@
+# like > shift
+# toggleLineComment N lines Flg comment vs uncomment
+(de togLCmt (N Flg)
+   (change
+      (let? P Pos
+         (do N
+            (when (car P)
+               (if Flg # insert comment
+                  (push P (name " ") (name "#"))
+                  (do 2
+                     (NIL (sub? (caar P) "# "))
+                     (pop P) ) ) )
+            (NIL (cdr P))
+            (setq P (con P (cons (car @) (cdr @)))) )
+         (=: posX 1) ) ) )
+
+(de sexpForm (L)
+   (sub? (car L) "()") )
+
+(de *KeyMap
+   ("Y" (evRpt (list 'togLCmt *Cnt T)))
+   ("U" (evRpt (list 'togLCmt *Cnt)))
+   ("(" (move 'goBackward 'sexpForm 1))
+   (")" (move 'goForward 'sexpForm 1)) )
+
+# instead of (map+ ";" "%") so d; works like d% etc
+(use (@Prg)
+  (patch vip~vi '("%" @Prg) (fill '(("%" ";") . @Prg))) )
+
+
+(de parMatchBackward (Flg) # Flg T means in insert mode
+   (let (X (dec (: posX))
+         Y (: posY)
+         At NIL
+         AtM NIL # At markup
+         Line (get (: buffer text) Y)
+         Closed (if Flg 0 1))
+      (loop
+         (setq At (get Line X))
+         (setq AtM (and (val At)
+                        (or (=T @) # T in string gt0 in comment or quote char
+                            (gt0 @) ) ) )
+         (T (and (=1 Closed) (= At "(") (not AtM)) (cons X Y))
+         (unless AtM # in comment or is quote char "
+            (case At
+               ("(" (dec 'Closed))
+               (")" (inc 'Closed)) ) )
+         (NIL (if (< (max 1 (: winX)) X)
+               (setq At (get Line (dec 'X)))
+               # go line upwards
+               (when (<= (: winY) (dec 'Y))
+                  (setq Line (get (: buffer text) Y))
+                  (setq X (length Line))
+                  (setq At (get Line X)) ) ) )
+         ) ) )
+
+
+(de parMatchForward (Flg) # Flg T if insert mode
+   (let (X (: posX)
+         Y (: posY)
+         At NIL
+         AtM NIL # At markup
+         Line (get (: buffer text) Y)
+         Opened (if Flg 1 0) )
+      (loop
+         (setq At (get Line X))
+         (setq AtM (and (val At)
+                        (or (=T @) # T in string gt0 in comment or quote char
+                            (gt0 @) ) ) )
+         (T (and (=1 Opened) (= At ")") (not AtM)) 
+            (when (< X (+ (: winX) *Columns)) # don't highlight if paren is offscreen on the right
+               (cons X Y) ) )
+         (unless AtM # in comment or is quote char "
+            (case At
+               ("(" (inc 'Opened))
+               (")" (dec 'Opened)) ) )
+         (NIL (if (get Line (inc 'X))
+               (setq At @)
+               # go line downwards
+               (when (< (inc 'Y) (+ (: winY) (: lines) -1))
+                  (setq Line (get (: buffer text) Y))
+                  (setq X 1)
+                  (setq At (get Line X)) ) ) )
+         ) ) )
+
+(setq *PrvCX NIL)
+(setq *PrvCY NIL)
+
+# highlight matching parenthesis (if in view) when typing ) or (
+(let (@Wrap '(cursor))
+   (patch vip~chgLine @Wrap
+         '(let (InIns T
+                AtC (get L (dec (: posX)))
+                AtClose (= ")" AtC)
+                AtOpen (= "(" AtC) )
+             (cursor) ) ) )
+
+(redef vip~cursor ()
+   (prog
+     (let (AtC (get (: buffer text) (: posY) (: posX)))
+      (when (and *PrvCX *PrvCY) # undo prev highlight if any
+         (let (PX (: posX)
+               PY (: posY)
+               OrigChar (if (and InIns (= PX *PrvCX) (= PY *PrvCY)) # orig char in currently editing line
+                           (get L *PrvCX)
+                           (get (: buffer text) *PrvCY *PrvCX) ) )
+            (=: posX *PrvCX)
+            (=: posY *PrvCY)
+            (setq *PrvCX NIL)
+            (setq *PrvCY NIL)
+            (cursor)
+            (prin OrigChar)
+            (flush)
+            (=: posX PX)
+            (=: posY PY) ))
+      (when (or (and InIns AtClose)
+            (and (not InIns) (= AtC ")") ) )
+         (let? ParXY (parMatchBackward InIns)
+            (let ((ParX . ParY) ParXY
+                  PX (: posX)
+                  PY (: posY))
+               (=: posX ParX)
+               (=: posY ParY)
+               (setq *PrvCX ParX)
+               (setq *PrvCY ParY)
+               (cursor)
+               (prin "\e[104m(\e[0m")
+               (flush)
+               (=: posX PX)
+               (=: posY PY) ) ) )
+      (when (or (and InIns AtOpen)
+            (and (not InIns) (= AtC "(") ) )
+         (let? ParXY (parMatchForward InIns)
+            (let ((ParX . ParY) ParXY
+                  PX (: posX)
+                  PY (: posY))
+               (=: posX ParX)
+               (=: posY ParY)
+               (setq *PrvCX ParX)
+               (setq *PrvCY ParY)
+               (cursor)
+               (prin "\e[104m)\e[0m")
+               (flush)
+               (=: posX PX)
+               (=: posY PY) ) ) ) )
+      (cursor) ) )
+
+# first tab indents as many spaces as line above
+(let (Clause '(- 3 (% (dec (: posX)) 3)))
+   (patch vip~insMode
+      Clause
+      '(or (and (=1 (: posX))
+            (gt0 (dec (: posY)))
+            (let (L (get (: buffer text) @))
+               (for (N 1 (= " " (get L N)) (inc N)) N) ) ) # use number of prefix spaces as line above
+         (- 3 (% (dec (: posX)) 3)) )
+      ) )
+
+# backspace undoes 3 spaces if preceded by 3 spaces (aka "undo tab")
+(use (@BSPrg)
+   (patch
+      vip~insMode
+      #Ls
+      '(when (and Chg (n0 (car Chg))) (_bs) @BSPrg)
+      (fill '(when (and Chg (n0 (car Chg)))
+               (if (and (nth (car P) (- (: posX) 3))
+                        (head '(" " " " " ") @) )
+                  (do 3 (_bs))
+                  (_bs) )
+               ^ @BSPrg)
+         )
+      ) )
+
+# Make cmd bottom window bigger
+(setq *Keys (append '("-" "-" "-") *Keys))
