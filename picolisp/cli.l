@@ -377,7 +377,7 @@
    (setq *Deck NIL
          *Hand NIL
          *Discards '(NIL NIL NIL NIL NIL)
-         *Jackpot 1234567890
+         *Jackpot 250
          )
    (setState 'Welcome)
    (while (case (key 500)
